@@ -37,12 +37,30 @@
     <canvas id="gameCanvas" width="600" height="600"></canvas>
     <div id="controls">Arrow Keys: Move | Space: Drop Bomb</div>
 
-    <script>
+    <script type="module">
         // Game setup
+        import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+
         const canvas = document.getElementById('gameCanvas');
-        const ctx = canvas.getContext('2d');
+        //const ctx = canvas.getContext('2d');
         const GRID_SIZE = 12;
-        const TILE_SIZE = 50;
+
+        // 3D state
+        let scene, camera, renderer;
+        let floorGroup, wallGroup, blockGroup, unitGroup;
+
+        // Mesh references
+        let playerMesh;
+        let enemyMeshes = [];
+        let bombMeshMap = new Map();
+        let fxGroup; // explosion VFX parent
+
+
+
+        function gridToWorld(gx, gy, y = 0) {
+            return { x: gx + 0.5, y, z: gy + 0.5 };
+            //const gridToWorld = (gx, gy, y = 0) => ({ x: gx + 0.5, y, z: gy + 0.5 });
+        }
         
         // Game state
         let gameState = {
@@ -69,7 +87,66 @@
         
         // Input handling
         let keys = {};
-        
+
+        //Set up 3d space
+        function init3D() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x202030); // Option D — subtle dark blue-gray background
+
+            //Perspective camera for 3D depth
+            camera = new THREE.PerspectiveCamera(45, canvas.width / canvas.height, 0.1, 100);
+
+            // Calculate grid center
+            const centerX = GRID_SIZE * 0.5;
+            const centerZ = GRID_SIZE * 0.5;
+
+            // Position camera bottom middle
+            camera.position.set(centerX, GRID_SIZE * 1.3, GRID_SIZE + 4);
+
+
+            // Make it look at the middle of the grid
+            camera.lookAt(centerX, 0, centerZ);
+
+            renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+            renderer.setSize(canvas.width, canvas.height);
+            renderer.setPixelRatio(window.devicePixelRatio || 1);
+            renderer.setClearColor(0x202030, 1);
+            renderer.shadowMap.enabled = true;                // Option C — enable shadows
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap; // softer shadows
+
+            // Lighting setup
+            const ambient = new THREE.AmbientLight(0xffffff, 0.4); // soft fill light
+            scene.add(ambient);
+
+            const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+            dir.position.set(6, 12, 6);
+            dir.castShadow = true;
+            dir.shadow.mapSize.width = 1024;
+            dir.shadow.mapSize.height = 1024;
+            dir.shadow.camera.near = 0.5;
+            dir.shadow.camera.far = 50;
+            scene.add(dir);
+
+            // Groups
+            floorGroup = new THREE.Group();
+            wallGroup  = new THREE.Group();
+            blockGroup = new THREE.Group();
+            unitGroup  = new THREE.Group(); // player + enemies
+            fxGroup    = new THREE.Group();
+            scene.add(floorGroup, wallGroup, blockGroup, unitGroup, fxGroup);
+
+            // Floor — make it receive shadows
+            const floor = new THREE.Mesh(
+                new THREE.PlaneGeometry(GRID_SIZE, GRID_SIZE),
+                new THREE.MeshStandardMaterial({ color: 0x333333 })
+            );
+            floor.rotation.x = -Math.PI / 2;
+            floor.position.set(GRID_SIZE * 0.5, 0, GRID_SIZE * 0.5);
+            floor.receiveShadow = true; // Option C — allow shadows
+            floorGroup.add(floor);
+        }
+
+
         // Initialize game
         function initGame() {
             // Create walls (border and fixed positions)
@@ -113,6 +190,137 @@
             explosions = [];
         }
         
+        //build 3d objects for visuals walls/floors
+        function buildStaticMeshesFromGrid() {
+            // Clear old (if any)
+            wallGroup.clear();
+            blockGroup.clear();
+
+            // Walls
+            const wallGeo = new THREE.BoxGeometry(1, 1, 1);
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
+            walls.forEach(({ x, y }) => {
+              const m = new THREE.Mesh(wallGeo, wallMat);
+              m.castShadow = true;
+              m.receiveShadow = true;
+              const p = gridToWorld(x, y, 0.5);
+              m.position.set(p.x, p.y, p.z);
+              wallGroup.add(m);
+            });
+
+            // Blocks
+            const blockGeo = new THREE.BoxGeometry(1, 1, 1);
+            const blockMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+            blocks.forEach(({ x, y }) => {
+              const m = new THREE.Mesh(blockGeo, blockMat);
+              m.castShadow = true;
+              m.receiveShadow = true;
+              const p = gridToWorld(x, y, 0.5);
+              m.position.set(p.x, p.y, p.z);
+              blockGroup.add(m);
+            });
+        }
+
+        //build 3d objects for visuals of player/enemy
+        function buildCharacterMeshes() {
+            // Player
+            if (!playerMesh) {
+              playerMesh = new THREE.Mesh(
+                new THREE.BoxGeometry(0.8, 0.8, 0.8),
+                new THREE.MeshStandardMaterial({ color: 0x00ff00 })
+              );
+              playerMesh.castShadow = true;
+              playerMesh.receiveShadow = true;
+              unitGroup.add(playerMesh);
+            }
+            const pp = gridToWorld(player.x, player.y, 0.4);
+            playerMesh.position.set(pp.x, pp.y, pp.z);
+
+            // Enemies
+            enemyMeshes.forEach(m => unitGroup.remove(m));
+            enemyMeshes = [];
+
+            const enemyGeo = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+            const enemyMat = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+            enemies.forEach(e => {
+              const m = new THREE.Mesh(enemyGeo, enemyMat);
+              m.castShadow = true;
+              m.receiveShadow = true;
+              const p = gridToWorld(e.x, e.y, 0.4);
+              m.position.set(p.x, p.y, p.z);
+              unitGroup.add(m);
+              enemyMeshes.push(m);
+            });
+          }
+
+        //create bomb mesh
+        function placeBombMesh(x, y) {
+            const k = `${x},${y}`;
+            if (bombMeshMap.has(k)) return; // already has a bomb mesh on this tile
+
+                const geo = new THREE.SphereGeometry(0.3, 16, 16);
+                const mat = new THREE.MeshStandardMaterial({ color: 0x000000 });
+                const m = new THREE.Mesh(geo, mat);
+
+                const p = gridToWorld(x, y, 0.3);
+                m.position.set(p.x, p.y, p.z);
+
+                unitGroup.add(m);
+                bombMeshMap.set(k, m);
+            }
+
+        //delete bombmesh
+        function removeBombMesh(x, y) {
+            const k = `${x},${y}`;
+            const m = bombMeshMap.get(k);
+            if (!m) return;
+
+                unitGroup.remove(m);
+                m.geometry.dispose();
+                m.material.dispose();
+                bombMeshMap.delete(k);
+            }
+
+        //clear all bomb meshes (use on level reset)
+        function clearAllBombMeshes() {
+            for (const m of bombMeshMap.values()) {
+                unitGroup.remove(m);
+                m.geometry.dispose();
+                m.material.dispose();
+            }
+            bombMeshMap.clear();
+        }
+
+        //clear any leftover explosion effects
+        function clearAllExplosions() {
+            explosions.forEach(exp => {
+                if (exp.mesh) {
+                    fxGroup.remove(exp.mesh);
+                    exp.mesh.geometry.dispose();
+                    exp.mesh.material.dispose();
+                }
+            });
+            explosions = [];
+        }
+
+
+        //update blocks affected from explosion
+        function rebuildBlocks() {
+            blockGroup.clear(); // okay for now; later we can dispose materials/geos if we want
+
+            const blockGeo = new THREE.BoxGeometry(1, 1, 1);
+            const blockMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+
+            blocks.forEach(({ x, y }) => {
+                const m = new THREE.Mesh(blockGeo, blockMat);
+                m.castShadow = true;
+                m.receiveShadow = true;
+                const p = gridToWorld(x, y, 0.5);
+                m.position.set(p.x, p.y, p.z);
+                blockGroup.add(m);
+            });
+        }
+
         // Check if position is free (no walls or blocks)
         function isPositionFree(x, y) {
             if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return false;
@@ -198,6 +406,7 @@
                         y: player.y,
                         timer: 120 // 2 seconds at 60fps
                     });
+                    placeBombMesh(player.x, player.y);
                 }
                 keys['Space'] = false; // Prevent continuous bombing
             }
@@ -208,14 +417,22 @@
             if (gameState.gameOver) return;
             
             handleInput();
+
+            const p = gridToWorld(player.x, player.y, 0.4);
+            playerMesh.position.set(p.x, p.y, p.z);
             
             // Update enemies
-            enemies.forEach(enemy => {
+            enemies.forEach((enemy,i) => {
                 enemy.moveTimer++;
                 if (enemy.moveTimer >= 60) { // Move every second
                     moveEnemyTowardsPlayer(enemy);
                     enemy.moveTimer = 0;
                 }
+                if (enemyMeshes[i]) { // <— guard
+                    const epos = gridToWorld(enemy.x, enemy.y, 0.4);
+                    enemyMeshes[i].position.set(epos.x, epos.y, epos.z);
+                }
+
                 
                 // Check collision with player
                 if (enemy.x === player.x && enemy.y === player.y) {
@@ -226,6 +443,8 @@
                         // Reset player position
                         player.x = 1;
                         player.y = 1;
+                        const p = gridToWorld(1, 1, 0.4);
+                        playerMesh.position.set(p.x, p.y, p.z);
                     }
                 }
             });
@@ -234,26 +453,74 @@
             bombs = bombs.filter(bomb => {
                 bomb.timer--;
                 if (bomb.timer <= 0) {
+                    removeBombMesh(bomb.x, bomb.y);
                     explodeBomb(bomb.x, bomb.y);
                     return false;
                 }
                 return true;
             });
             
-            // Update explosions
+            // Update explosions (VFX + lifetime)
             explosions = explosions.filter(explosion => {
                 explosion.timer--;
-                return explosion.timer > 0;
-            });
+
+                // visual animation
+                if (explosion.mesh) {
+                    const t = explosion.timer / 30;               // 1 → 0 over life
+                    const s = 1.0 + 0.15 * (1 - t);               // slight “pop”
+                    explosion.mesh.scale.set(s, 1, s);
+
+                    const mat = explosion.mesh.material;
+                    mat.emissiveIntensity = 0.6 + 0.6 * (1 - t);  // brighten then fade
+                    mat.opacity = Math.max(0, t);                  // fade out
+                }
+
+                if (explosion.timer <= 0) {
+                    if (explosion.mesh) {
+                        fxGroup.remove(explosion.mesh);
+                        explosion.mesh.geometry.dispose();
+                        explosion.mesh.material.dispose();
+                        explosion.mesh = null;
+                    }
+                    return false;
+                }
+            return true;
+        });
+
             
             // Check win condition
             if (enemies.length === 0 && gameState.score > 0) {
                 gameState.score += 1000;
                 alert("Level Complete! Starting next level...");
+                clearAllExplosions();
+                clearAllBombMeshes();
                 initGame();
+                buildStaticMeshesFromGrid();
+                buildCharacterMeshes();
             }
         }
         
+        //create explosion effect
+        function spawnExplosionVFX(x, y, ttl = 30) {
+            // a thin box so shadows/light still work nicely
+            const geo = new THREE.BoxGeometry(1, 0.06, 1);
+            const mat = new THREE.MeshStandardMaterial({
+                color: 0xffcc33,
+                emissive: 0x995500,
+                emissiveIntensity: 0.6,
+                transparent: true,
+                opacity: 1.0,
+                depthWrite: false,   // helps avoid z-fighting flicker
+            });
+            const m = new THREE.Mesh(geo, mat);
+            const p = gridToWorld(x, y, 0.03);
+            m.position.set(p.x, p.y, p.z);
+            m.castShadow = false;
+            m.receiveShadow = false;
+            fxGroup.add(m);
+            return m;
+        }
+
         // Explode bomb and create explosions
         function explodeBomb(bombX, bombY) {
             let explosionRange = 2;
@@ -291,13 +558,12 @@
         
         // Create explosion at position
         function createExplosion(x, y) {
-            explosions.push({
-                x: x,
-                y: y,
-                timer: 30
-            });
+            const exp = { x, y, timer: 30, mesh: spawnExplosionVFX(x, y, 30) };
+            explosions.push(exp);
+
             
             // Destroy blocks
+            const beforeBlocks = blocks.length;
             blocks = blocks.filter(block => {
                 if (block.x === x && block.y === y) {
                     gameState.score += 100;
@@ -305,8 +571,13 @@
                 }
                 return true;
             });
+            if (blocks.length !== beforeBlocks) {
+                // Rebuild just the destructible block meshes (not walls/floor)
+                rebuildBlocks();
+            }
             
             // Destroy enemies
+            const beforeEnemies = enemies.length;
             enemies = enemies.filter(enemy => {
                 if (enemy.x === x && enemy.y === y) {
                     gameState.score += 500;
@@ -314,6 +585,10 @@
                 }
                 return true;
             });
+            if (enemies.length !== beforeEnemies) {
+                // Quick, simple way: rebuild all enemy meshes.
+                buildCharacterMeshes();
+            }
             
             // Check player hit
             if (player.x === x && player.y === y) {
@@ -323,65 +598,21 @@
                 } else {
                     player.x = 1;
                     player.y = 1;
+                    const p = gridToWorld(1, 1, 0.4);
+                    playerMesh.position.set(p.x, p.y, p.z);
                 }
             }
         }
         
         // Render game
         function render() {
-            // Clear canvas
-            ctx.fillStyle = '#333';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
-            // Draw walls
-            ctx.fillStyle = '#666';
-            walls.forEach(wall => {
-                ctx.fillRect(wall.x * TILE_SIZE, wall.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
-            });
-            
-            // Draw blocks
-            ctx.fillStyle = '#8B4513';
-            blocks.forEach(block => {
-                ctx.fillRect(block.x * TILE_SIZE, block.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
-            });
-            
-            // Draw bombs
-            ctx.fillStyle = '#000';
-            bombs.forEach(bomb => {
-                ctx.fillRect(bomb.x * TILE_SIZE + 10, bomb.y * TILE_SIZE + 10, TILE_SIZE - 20, TILE_SIZE - 20);
-            });
-            
-            // Draw explosions
-            ctx.fillStyle = '#ffff00';
-            explosions.forEach(explosion => {
-                ctx.fillRect(explosion.x * TILE_SIZE, explosion.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
-            });
-            
-            // Draw enemies
-            enemies.forEach(enemy => {
-                ctx.fillStyle = enemy.color;
-                ctx.fillRect(enemy.x * TILE_SIZE + 5, enemy.y * TILE_SIZE + 5, TILE_SIZE - 10, TILE_SIZE - 10);
-            });
-            
-            // Draw player
-            ctx.fillStyle = player.color;
-            ctx.fillRect(player.x * TILE_SIZE + 5, player.y * TILE_SIZE + 5, TILE_SIZE - 10, TILE_SIZE - 10);
-            
-            // Update UI
-            document.getElementById('info').textContent = `Score: ${gameState.score} | Lives: ${gameState.lives}`;
-            
-            if (gameState.gameOver) {
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                ctx.fillStyle = '#fff';
-                ctx.font = '48px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2);
-                ctx.font = '24px Arial';
-                ctx.fillText('Press R to restart', canvas.width / 2, canvas.height / 2 + 50);
-            }
+            renderer.render(scene, camera);
+
+            // Keep your existing HUD text updates:
+            document.getElementById('info').textContent =
+              `Score: ${gameState.score} | Lives: ${gameState.lives}`;
         }
-        
+    
         // Game loop
         function gameLoop() {
             update();
@@ -392,24 +623,37 @@
         // Event listeners
         document.addEventListener('keydown', (e) => {
             keys[e.code] = true;
-            
+
             if (e.code === 'KeyR' && gameState.gameOver) {
-                // Restart game
                 gameState = { score: 0, lives: 3, gameOver: false };
                 player = { x: 1, y: 1, color: '#00ff00', moveTimer: 0, moveDelay: 10 };
+                clearAllExplosions();
+                clearAllBombMeshes();
                 initGame();
+                buildStaticMeshesFromGrid();
+                buildCharacterMeshes();
             }
-            
+
+            // only block page scrolling keys
+            if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code)) {
             e.preventDefault();
+            }
         });
         
         document.addEventListener('keyup', (e) => {
             keys[e.code] = false;
         });
+
         
         // Start game
-        initGame();
-        gameLoop();
+        clearAllExplosions();
+        clearAllBombMeshes();
+        init3D();     // NEW: set up scene/camera/lights
+        initGame();   // Your existing function (fills walls/blocks/enemies)
+        buildStaticMeshesFromGrid(); // NEW: make meshes for walls/blocks
+        buildCharacterMeshes();      // NEW: place player & enemies
+        gameLoop();  // Your existing loop (update + render)
+
     </script>
 </body>
 </html>
