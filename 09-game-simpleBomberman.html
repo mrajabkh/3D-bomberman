@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Bomberman</title>
+    <style>
+        body {
+            margin: 0;
+            background: #222;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            border: 2px solid #fff;
+            background: #333;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 18px;
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">Score: 0 | Lives: 3</div>
+    <canvas id="gameCanvas" width="600" height="600"></canvas>
+    <div id="controls">Arrow Keys: Move | Space: Drop Bomb</div>
+
+    <script>
+        // Game setup
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const GRID_SIZE = 12;
+        const TILE_SIZE = 50;
+        
+        // Game state
+        let gameState = {
+            score: 0,
+            lives: 3,
+            gameOver: false
+        };
+        
+        // Player object
+        let player = {
+            x: 1,
+            y: 1,
+            color: '#00ff00',
+            moveTimer: 0,
+            moveDelay: 10  // Movement delay in frames
+        };
+        
+        // Game arrays
+        let enemies = [];
+        let bombs = [];
+        let explosions = [];
+        let walls = [];
+        let blocks = [];
+        
+        // Input handling
+        let keys = {};
+        
+        // Initialize game
+        function initGame() {
+            // Create walls (border and fixed positions)
+            walls = [];
+            for (let x = 0; x < GRID_SIZE; x++) {
+                for (let y = 0; y < GRID_SIZE; y++) {
+                    // Border walls
+                    if (x === 0 || x === GRID_SIZE-1 || y === 0 || y === GRID_SIZE-1) {
+                        walls.push({x: x, y: y});
+                    }
+                    // Inner walls (every other position)
+                    else if (x % 2 === 0 && y % 2 === 0) {
+                        walls.push({x: x, y: y});
+                    }
+                }
+            }
+            
+            // Create destructible blocks
+            blocks = [];
+            for (let x = 3; x < GRID_SIZE-1; x++) {
+                for (let y = 3; y < GRID_SIZE-1; y++) {
+                    // Skip wall positions
+                    if (walls.some(wall => wall.x === x && wall.y === y)) continue;
+                    
+                    // 50% chance to place a block
+                    if (Math.random() < 0.5) {
+                        blocks.push({x: x, y: y});
+                    }
+                }
+            }
+            
+            // Create enemies
+            enemies = [
+                {x: GRID_SIZE-2, y: 1, color: '#ff0000', moveTimer: 0},
+                {x: GRID_SIZE-2, y: GRID_SIZE-2, color: '#ff0000', moveTimer: 0},
+                {x: 1, y: GRID_SIZE-2, color: '#ff0000', moveTimer: 0}
+            ];
+            
+            // Reset other arrays
+            bombs = [];
+            explosions = [];
+        }
+        
+        // Check if position is free (no walls or blocks)
+        function isPositionFree(x, y) {
+            if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return false;
+            if (walls.some(wall => wall.x === x && wall.y === y)) return false;
+            if (blocks.some(block => block.x === x && block.y === y)) return false;
+            return true;
+        }
+        
+        // Simple enemy AI - move towards player using distance
+        function moveEnemyTowardsPlayer(enemy) {
+            let bestMove = {x: enemy.x, y: enemy.y};
+            let shortestDistance = getDistance(enemy.x, enemy.y, player.x, player.y);
+            
+            // Check all 4 directions
+            let directions = [
+                {x: 0, y: -1}, // up
+                {x: 0, y: 1},  // down
+                {x: -1, y: 0}, // left
+                {x: 1, y: 0}   // right
+            ];
+            
+            directions.forEach(dir => {
+                let newX = enemy.x + dir.x;
+                let newY = enemy.y + dir.y;
+                
+                if (isPositionFree(newX, newY)) {
+                    let distance = getDistance(newX, newY, player.x, player.y);
+                    if (distance < shortestDistance) {
+                        shortestDistance = distance;
+                        bestMove = {x: newX, y: newY};
+                    }
+                }
+            });
+            
+            enemy.x = bestMove.x;
+            enemy.y = bestMove.y;
+        }
+        
+        // Calculate distance between two points
+        function getDistance(x1, y1, x2, y2) {
+            return Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+        }
+        
+        // Handle player input with movement timer
+        function handleInput() {
+            // Update movement timer
+            if (player.moveTimer > 0) {
+                player.moveTimer--;
+                return; // Skip movement if timer hasn't expired
+            }
+            
+            let newX = player.x;
+            let newY = player.y;
+            let moved = false;
+            
+            if (keys['ArrowLeft']) {
+                newX--;
+                moved = true;
+            } else if (keys['ArrowRight']) {
+                newX++;
+                moved = true;
+            } else if (keys['ArrowUp']) {
+                newY--;
+                moved = true;
+            } else if (keys['ArrowDown']) {
+                newY++;
+                moved = true;
+            }
+            
+            // Move player if new position is free
+            if (moved && isPositionFree(newX, newY)) {
+                player.x = newX;
+                player.y = newY;
+                player.moveTimer = player.moveDelay; // Reset movement timer
+            }
+            
+            // Drop bomb
+            if (keys['Space']) {
+                // Check if there's already a bomb at player position
+                if (!bombs.some(bomb => bomb.x === player.x && bomb.y === player.y)) {
+                    bombs.push({
+                        x: player.x,
+                        y: player.y,
+                        timer: 120 // 2 seconds at 60fps
+                    });
+                }
+                keys['Space'] = false; // Prevent continuous bombing
+            }
+        }
+        
+        // Update game logic
+        function update() {
+            if (gameState.gameOver) return;
+            
+            handleInput();
+            
+            // Update enemies
+            enemies.forEach(enemy => {
+                enemy.moveTimer++;
+                if (enemy.moveTimer >= 60) { // Move every second
+                    moveEnemyTowardsPlayer(enemy);
+                    enemy.moveTimer = 0;
+                }
+                
+                // Check collision with player
+                if (enemy.x === player.x && enemy.y === player.y) {
+                    gameState.lives--;
+                    if (gameState.lives <= 0) {
+                        gameState.gameOver = true;
+                    } else {
+                        // Reset player position
+                        player.x = 1;
+                        player.y = 1;
+                    }
+                }
+            });
+            
+            // Update bombs
+            bombs = bombs.filter(bomb => {
+                bomb.timer--;
+                if (bomb.timer <= 0) {
+                    explodeBomb(bomb.x, bomb.y);
+                    return false;
+                }
+                return true;
+            });
+            
+            // Update explosions
+            explosions = explosions.filter(explosion => {
+                explosion.timer--;
+                return explosion.timer > 0;
+            });
+            
+            // Check win condition
+            if (enemies.length === 0 && gameState.score > 0) {
+                gameState.score += 1000;
+                alert("Level Complete! Starting next level...");
+                initGame();
+            }
+        }
+        
+        // Explode bomb and create explosions
+        function explodeBomb(bombX, bombY) {
+            let explosionRange = 2;
+            
+            // Center explosion
+            createExplosion(bombX, bombY);
+            
+            // Explosions in 4 directions
+            let directions = [
+                {x: 0, y: -1}, // up
+                {x: 0, y: 1},  // down
+                {x: -1, y: 0}, // left
+                {x: 1, y: 0}   // right
+            ];
+            
+            directions.forEach(dir => {
+                for (let i = 1; i <= explosionRange; i++) {
+                    let explodeX = bombX + dir.x * i;
+                    let explodeY = bombY + dir.y * i;
+                    
+                    // Stop at walls
+                    if (walls.some(wall => wall.x === explodeX && wall.y === explodeY)) {
+                        break;
+                    }
+                    
+                    createExplosion(explodeX, explodeY);
+                    
+                    // Stop at blocks (but destroy them)
+                    if (blocks.some(block => block.x === explodeX && block.y === explodeY)) {
+                        break;
+                    }
+                }
+            });
+        }
+        
+        // Create explosion at position
+        function createExplosion(x, y) {
+            explosions.push({
+                x: x,
+                y: y,
+                timer: 30
+            });
+            
+            // Destroy blocks
+            blocks = blocks.filter(block => {
+                if (block.x === x && block.y === y) {
+                    gameState.score += 100;
+                    return false;
+                }
+                return true;
+            });
+            
+            // Destroy enemies
+            enemies = enemies.filter(enemy => {
+                if (enemy.x === x && enemy.y === y) {
+                    gameState.score += 500;
+                    return false;
+                }
+                return true;
+            });
+            
+            // Check player hit
+            if (player.x === x && player.y === y) {
+                gameState.lives--;
+                if (gameState.lives <= 0) {
+                    gameState.gameOver = true;
+                } else {
+                    player.x = 1;
+                    player.y = 1;
+                }
+            }
+        }
+        
+        // Render game
+        function render() {
+            // Clear canvas
+            ctx.fillStyle = '#333';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw walls
+            ctx.fillStyle = '#666';
+            walls.forEach(wall => {
+                ctx.fillRect(wall.x * TILE_SIZE, wall.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+            });
+            
+            // Draw blocks
+            ctx.fillStyle = '#8B4513';
+            blocks.forEach(block => {
+                ctx.fillRect(block.x * TILE_SIZE, block.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+            });
+            
+            // Draw bombs
+            ctx.fillStyle = '#000';
+            bombs.forEach(bomb => {
+                ctx.fillRect(bomb.x * TILE_SIZE + 10, bomb.y * TILE_SIZE + 10, TILE_SIZE - 20, TILE_SIZE - 20);
+            });
+            
+            // Draw explosions
+            ctx.fillStyle = '#ffff00';
+            explosions.forEach(explosion => {
+                ctx.fillRect(explosion.x * TILE_SIZE, explosion.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+            });
+            
+            // Draw enemies
+            enemies.forEach(enemy => {
+                ctx.fillStyle = enemy.color;
+                ctx.fillRect(enemy.x * TILE_SIZE + 5, enemy.y * TILE_SIZE + 5, TILE_SIZE - 10, TILE_SIZE - 10);
+            });
+            
+            // Draw player
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x * TILE_SIZE + 5, player.y * TILE_SIZE + 5, TILE_SIZE - 10, TILE_SIZE - 10);
+            
+            // Update UI
+            document.getElementById('info').textContent = `Score: ${gameState.score} | Lives: ${gameState.lives}`;
+            
+            if (gameState.gameOver) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = '#fff';
+                ctx.font = '48px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2);
+                ctx.font = '24px Arial';
+                ctx.fillText('Press R to restart', canvas.width / 2, canvas.height / 2 + 50);
+            }
+        }
+        
+        // Game loop
+        function gameLoop() {
+            update();
+            render();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Event listeners
+        document.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            
+            if (e.code === 'KeyR' && gameState.gameOver) {
+                // Restart game
+                gameState = { score: 0, lives: 3, gameOver: false };
+                player = { x: 1, y: 1, color: '#00ff00', moveTimer: 0, moveDelay: 10 };
+                initGame();
+            }
+            
+            e.preventDefault();
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            keys[e.code] = false;
+        });
+        
+        // Start game
+        initGame();
+        gameLoop();
+    </script>
+</body>
+</html>
